@@ -15,7 +15,10 @@ from telegram.ext import (
 )
 
 TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+_admin = os.environ.get("ADMIN_ID")
+if not _admin:
+    raise RuntimeError("ENV ADMIN_ID is not set in Railway Variables")
+ADMIN_ID = int(_admin)
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Kyiv"))
 REMIND_AT = os.environ.get("REMIND_AT", "09:00")
 DATA_FILE = "birthdays.csv"
