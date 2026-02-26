@@ -15,30 +15,78 @@ class Person:
     born: date
     notes: str = ""
 
+def _parse_date(s: str) -> date:
+    s = s.strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    raise ValueError(f"Bad date format: {s}")
+
 def load_people() -> list[Person]:
-    people: list[Person] = []
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8", newline="") as f:
-            r = csv.DictReader(f)
-            for row in r:
-                name = (row.get("name") or "").strip()
-                d = (row.get("date") or "").strip()
-                notes = (row.get("notes") or "").strip()
-                if not name or not d:
-                    continue
-                born = datetime.strptime(d, "%Y-%m-%d").date()
-                people.append(Person(name=name, born=born, notes=notes))
-    except FileNotFoundError:
-        pass
-    return people
+    # пробуем разные кодировки (часто файл в Windows-1251)
+    encodings = ["utf-8-sig", "utf-8", "cp1251"]
+    last_err = None
+
+    for enc in encodings:
+        try:
+            with open(DATA_FILE, "r", encoding=enc, newline="") as f:
+                raw = f.read()
+            # пустой файл
+            if not raw.strip():
+                return []
+
+            # определим разделитель
+            sample = raw[:2000]
+            delim = ";" if sample.count(";") >= sample.count(",") else ","
+
+            lines = [ln for ln in raw.splitlines() if ln.strip()]
+            first = lines[0].lower()
+
+            people: list[Person] = []
+
+            # 1) Если есть заголовки name/date/notes — читаем как таблицу
+            if "name" in first and "date" in first:
+                with open(DATA_FILE, "r", encoding=enc, newline="") as f:
+                    r = csv.DictReader(f, delimiter=delim)
+                    for row in r:
+                        name = (row.get("name") or "").strip()
+                        d = (row.get("date") or "").strip()
+                        notes = (row.get("notes") or "").strip()
+                        if not name or not d:
+                            continue
+                        people.append(Person(name=name, born=_parse_date(d), notes=notes))
+                return people
+
+            # 2) Иначе считаем, что это формат: "ФИО;dd.mm.yyyy" (без заголовка)
+            with open(DATA_FILE, "r", encoding=enc, newline="") as f:
+                r = csv.reader(f, delimiter=delim)
+                for row in r:
+                    if not row or len(row) < 2:
+                        continue
+                    name = str(row[0]).strip()
+                    d = str(row[1]).strip()
+                    notes = str(row[2]).strip() if len(row) >= 3 else ""
+                    if not name or not d:
+                        continue
+                    people.append(Person(name=name, born=_parse_date(d), notes=notes))
+            return people
+
+        except Exception as e:
+            last_err = e
+            continue
+
+    # если совсем не вышло
+    raise RuntimeError(f"Can't read {DATA_FILE}: {last_err}")
 
 def today() -> date:
     return datetime.now(TZ).date()
 
 def next_birthday(born: date, t: date) -> date:
-    # Feb 29 -> Feb 28 on non-leap years
     m, d = born.month, born.day
     y = t.year
+
     def safe(y_):
         if m == 2 and d == 29:
             try:
@@ -46,6 +94,7 @@ def next_birthday(born: date, t: date) -> date:
             except ValueError:
                 return date(y_, 2, 28)
         return date(y_, m, d)
+
     nb = safe(y)
     if nb < t:
         nb = safe(y + 1)
@@ -90,8 +139,24 @@ def month_range(t: date, next_month: bool) -> tuple[date, date]:
 async def start_cmd(update, context):
     await update.message.reply_text(
         "🎂 Бот ДР работает.\n"
-        "Команды: /tomorrow /aftertomorrow /thisweek /nextweek /thismonth /nextmonth /nearest 14"
+        "Команды: /tomorrow /aftertomorrow /thisweek /nextweek /thismonth /nextmonth /nearest 14\n"
+        "Диагностика: /count"
     )
+
+async def count_cmd(update, context):
+    people = load_people()
+    msg = f"В файле найдено людей: {len(people)}"
+    if people:
+        t = today()
+        # покажем первые 5 ближайших
+        upcoming = []
+        for p in people:
+            nb = next_birthday(p.born, t)
+            upcoming.append((nb, p.name))
+        upcoming.sort(key=lambda x: x[0])
+        preview = "\n".join([f"• {name} — {nb.strftime('%d.%m')}" for nb, name in upcoming[:5]])
+        msg += "\nБлижайшие:\n" + preview
+    await update.message.reply_text(msg)
 
 async def tomorrow_cmd(update, context):
     t = today()
@@ -158,8 +223,10 @@ async def nearest_cmd(update, context):
 def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN not set")
+
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("count", count_cmd))
     app.add_handler(CommandHandler("tomorrow", tomorrow_cmd))
     app.add_handler(CommandHandler("aftertomorrow", aftertomorrow_cmd))
     app.add_handler(CommandHandler("thisweek", thisweek_cmd))
